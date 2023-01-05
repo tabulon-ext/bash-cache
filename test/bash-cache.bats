@@ -5,6 +5,8 @@
 # Note most of these tests assumes the test takes less than 10 seconds (the background-refresh time)
 # ideally we could configure the stale cache threshold for the test so this is less brittle.
 
+set -u  # Treat unset variables as an error
+
 # Ensure each test has its own cache
 TEST_DIR=$(mktemp -d "${BATS_TMPDIR}/bash-cache-XXXXXXXXXX")
 _BC_TESTONLY_CACHE_DIR="${TEST_DIR}/cache"
@@ -356,6 +358,16 @@ stale_cache() {
 
   expensive_func
   (( $(call_count) == 1 )) # already cached
+}
+
+@test "force cache" {
+  bc::cache expensive_func 60s 10s
+  expensive_func
+  expensive_func
+  (( $(call_count) == 1 )) # cached
+
+  bc::force::expensive_func
+  (( $(call_count) == 2 )) # invalidated
 }
 
 @test "benchmark" {

@@ -2,6 +2,8 @@
 #
 # Unit tests of individual bash-cache functions, not overall caching semantics.
 
+set -u  # Treat unset variables as an error
+
 source "${BATS_TEST_DIRNAME}/../bash-cache.sh"
 
 skip_osx() {
@@ -110,7 +112,6 @@ skip_osx() {
 }
 
 @test "_time" {
-  true=1
   duration=$(bc::_time sleep 1)
-  [[ "$(bc <<<"$duration >= 1")" == $true ]]
+  [[ "$duration" == 1.* ]]
 }

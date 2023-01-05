@@ -1,13 +1,15 @@
 #!/bin/bash
-
+#
 # Bash Cache provides a transparent mechanism for caching long-running Bash
 # functions. See the README.md for full details.
+#
+# shellcheck disable=SC2317  # Disable this check for now, see shellcheck#2613 and shellcheck#2614
 
 # Configuration
 _bc_enabled=true
-_bc_version=(0 9 0)
+_bc_version=(0 10 0)
 
-if [[ -n "$BC_HASH_COMMAND" ]]; then
+if [[ -n "${BC_HASH_COMMAND:-}" ]]; then
   _bc_hash_command="$BC_HASH_COMMAND"
 elif command -v sha1sum &> /dev/null; then
   _bc_hash_command='sha1sum'
@@ -15,7 +17,7 @@ elif command -v shasum &> /dev/null; then # OSX
   _bc_hash_command='shasum'
 fi
 
-if [[ -n "$_BC_TESTONLY_CACHE_DIR" ]]; then
+if [[ -n "${_BC_TESTONLY_CACHE_DIR:-}" ]]; then
   _bc_cache_dir="$_BC_TESTONLY_CACHE_DIR"
 else
   printf -v _bc_cache_dir '%s/bash-cache-%s.%s-%s' \
@@ -37,7 +39,7 @@ bc::_ensure_dir_exists() {
 
 # Hash function used to key cached results.
 # We need to avoid munging similar invocations into identical strings to hash
-# (e.g. `foo a b` vs. `foo 'a b'` could naively be decomosed to the same
+# (e.g. `foo a b` vs. `foo 'a b'` could naively be decomposed to the same
 # string). Fortunately, we can safely use NUL as a field delimiter since NUL
 # bytes can't appear in Bash strings, meaning it _should_ not be possible for
 # different invocations to munge to the same hash input.
@@ -93,7 +95,7 @@ bc::_to_seconds() {
       esac
       (( duration += magnitude * ${element%?} )) # trim unit with %?
     else
-      printf "Invalid duration: '%s' (token: %s)\n" "$1" "${input##* }" >&2
+      printf "Invalid duration: '%s' (token: %s)\n" "$*" "${input##* }" >&2
       return 1
     fi
   done
@@ -127,7 +129,7 @@ bc::_read_input() {
      _contents+=("$_line"$'\n')
    done
    # include $_line once more to capture any content after the last newline
-   printf -v "$1" '%s' "${_contents[@]}" "$_line"
+   printf -v "$1" '%s' ${_contents[@]+"${_contents[@]}"} "$_line"
 }
 
 # Given a name and an existing function, create a new function called name that
@@ -151,7 +153,7 @@ bc::off() { _bc_enabled=false; }
 # Assumes ${env[@]}, ${func}, and ${args[@]} are set appropriately
 bc::_set_cache_read_loc() {
   # NOT local; must be local in calling function
-  cache_read_loc="${_bc_cache_dir}/$(bc::_hash "${env[@]}" -- "$func" "${args[@]}")"
+  cache_read_loc="${_bc_cache_dir}/$(bc::_hash ${env[@]+"${env[@]}"} -- "$func" ${args[@]+"${args[@]}"})"
 }
 
 # Captures function output and writes to disc
@@ -160,7 +162,7 @@ bc::_write_cache() {
   local cache_write_dir="${_bc_cache_dir}/data/${ttl}" cache
   bc::_ensure_dir_exists "$cache_write_dir"
   cache=$(mktemp -d "${cache_write_dir}/XXXXXXXXXX") || return
-  "bc::orig::${func}" "${args[@]}" > "${cache}/out" 2> "${cache}/err"
+  "bc::orig::${func}" ${args[@]+"${args[@]}"} > "${cache}/out" 2> "${cache}/err"
   printf '%s' $? > "${cache}/exit"
   ln -sfn "$cache" "$cache_read_loc" # atomic
 }
@@ -229,18 +231,18 @@ bc::_do_cleanup() {
 bc::cache() {
   local _seconds func="${1:?"Must provide a function name to cache"}"; shift
   local ttl=60 # legacy support for a default TTL duration, may go away
-  if [[ "$1" =~ [0-9]+[dhms]$ ]]; then # safe because variable names can't match this pattern
+  if [[ "${1:-}" =~ [0-9]+[dhms]$ ]]; then # safe because variable names can't match this pattern
     bc::_to_seconds "$1" || return; shift
     ttl=$_seconds
   fi
   local refresh=10 # legacy support for a default refresh duration, may go away
-  if [[ "$1" =~ [0-9]+[dhms]$ ]]; then # safe because variable names can't match this pattern
+  if [[ "${1:-}" =~ [0-9]+[dhms]$ ]]; then # safe because variable names can't match this pattern
     bc::_to_seconds "$1" || return; shift
     refresh=$_seconds
   fi
 
   if (( refresh > ttl )); then
-    printf 'refresh(%ss) cannot exceeed TTL(%ss).' "$refresh" "$ttl" >&2
+    printf 'refresh(%ss) cannot exceed TTL(%ss).' "$refresh" "$ttl" >&2
     return 1
   fi
 
@@ -256,7 +258,7 @@ bc::cache() {
   local v escaped env=()
   for v in "$@"; do
     # shellcheck disable=SC2016
-    printf -v escaped '"${%s}"' "$v"
+    printf -v escaped '"${%s:-}"' "$v"
     if ! eval ": ${escaped}" 2>/dev/null; then
       echo "${v} is not a valid variable" >&2
       return 1
@@ -283,6 +285,14 @@ bc::cache() {
         bc::_set_cache_read_loc
         bc::_write_cache
        } & )
+  }
+
+  # shellcheck disable=SC2288
+  bc::_force_template() {
+    local func="%func%" ttl="%ttl%" env=(%env%) args=("$@") cache_read_loc
+    bc::_set_cache_read_loc
+    rm -f "$cache_read_loc" # invalidate the cache
+    "%func%" "$@"
   }
 
   # shellcheck disable=SC2288
@@ -313,7 +323,7 @@ bc::cache() {
         fi
       # Unlike using exec, this syntax preserves any existing file descriptors that might be open.
       # https://mywiki.wooledge.org/FileDescriptor#Juggling_FDs describes this in more detail.
-      } 2>&5; } 2>/dev/null 3<"${cache_read_loc}/out" 4<"${cache_read_loc}/err"; } 5>&2
+      } 2>&5; } 2>/dev/null 3<"${cache_read_loc}/out" 4<"${cache_read_loc}/err"; } 5>&2 || true
 
       # No cache, refresh in foreground and try again
       bc::_write_cache
@@ -323,15 +333,17 @@ bc::cache() {
   # shellcheck disable=SC2155
   local warm_function_body=$(declare -f "bc::_warm_template" | tail -n +2)
   # shellcheck disable=SC2155
+  local force_function_body=$(declare -f "bc::_force_template" | tail -n +2)
+  # shellcheck disable=SC2155
   local cache_function_body=$(declare -f "bc::_cache_template" | tail -n +2)
-  unset -f bc::_warm_template bc::_cache_template
-  eval "$(printf 'bc::warm::%q()\n%s ; %q()\n%s' \
-      "$func" "$warm_function_body" "$func" "$cache_function_body" \
+  unset -f bc::_warm_template bc::_force_template bc::_cache_template
+  eval "$(printf 'bc::warm::%q()\n%s ; bc::force::%q()\n%s ; %q()\n%s' \
+      "$func" "$warm_function_body" "$func" "$force_function_body" "$func" "$cache_function_body" \
     | sed \
       -e "s/%func%/${func}/g" \
       -e "s/%ttl%/${ttl}/g" \
       -e "s/%refresh%/${refresh}/g" \
-      -e "s/%env%/${env[*]}/g")"
+      -e "s/%env%/${env[*]:-}/g")"
 }
 
 # Further decorates bc::cache with a mutual-exclusion lock. This ensures that
@@ -427,7 +439,7 @@ bc::memoize() {
   local v escaped env=()
   for v in "$@"; do
     # shellcheck disable=SC2016
-    printf -v escaped '"${%s}"' "$v"
+    printf -v escaped '"${%s:-}"' "$v"
     if ! eval ": ${escaped}" 2>/dev/null; then
       echo "${v} is not a valid variable" >&2
       return 1
@@ -449,9 +461,9 @@ bc::memoize() {
 
     for (( v=1; v<=$#; v++ )); do vars+=("$v"); done
     vars+=(%env%)
-    for v in "${vars[@]}"; do
+    for v in ${vars[@]+"${vars[@]}"}; do
       # shellcheck disable=SC2016
-      printf -v check '&& [[ "${%q}" == %q ]]' "$v" "${!v}"
+      printf -v check '&& [[ "${%q:-}" == %q ]]' "$v" "${!v:-}"
       checks+=("$check")
     done
 
@@ -459,7 +471,7 @@ bc::memoize() {
     printf -v func '%q() {
     "$_bc_enabled" || { bc::orig::%q "$@"; return; }
     if (( $# == %q )) %s; then printf "%%s" %q; else bc::memoize::%q "$@"; fi; }' \
-     '%func%' '%func%' "$#" "${checks[*]}" "$output" '%func%'
+     '%func%' '%func%' "$#" "${checks[*]:-}" "$output" '%func%'
     eval "$func"
   }
 
@@ -470,7 +482,7 @@ bc::memoize() {
     "$func" "$func" "$func" "$memoize_function_body" \
     | sed \
       -e "s/%func%/${func}/g" \
-      -e "s/%env%/${env[*]}/g")"
+      -e "s/%env%/${env[*]:-}/g")"
 }
 
 # Prints the real-time to execute the given command, discarding its output.
